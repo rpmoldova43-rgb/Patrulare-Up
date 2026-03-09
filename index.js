@@ -162,21 +162,20 @@ const VEHICLES_BY_RANK = {
     { label: "Trx", value: "Trx" },
   ],
 
-  chestor_general: [
-    { label: "Charger", value: "Charger" },
-    { label: "Ford Jeep", value: "Ford Jeep" },
-    { label: "Bmw M5", value: "Bmw M5" },
-    { label: "Elicopter", value: "Elicopter" },
-    { label: "Audi Rs7", value: "Audi Rs7" },
-    { label: "Insurgent", value: "Insurgent" },
-    { label: "Autobuz", value: "Autobuz" },
-    { label: "Transport Munitie", value: "Transport Munitie" },
-    { label: "Range Rover", value: "Range Rover" },
-    { label: "Mercedes GT", value: "Mercedes GT" },
-    { label: "Autobuz", value: "Autobuz" },
-    { label: "Trx", value: "Trx" },
-    { label: "Bugati", value: "Bugati" },
-  ],
+    chestor_general: [
+      { label: "Charger", value: "Charger" },
+      { label: "Ford Jeep", value: "Ford Jeep" },
+      { label: "Bmw M5", value: "Bmw M5" },
+      { label: "Elicopter", value: "Elicopter" },
+      { label: "Audi Rs7", value: "Audi Rs7" },
+      { label: "Insurgent", value: "Insurgent" },
+      { label: "Autobuz", value: "Autobuz" },
+      { label: "Transport Munitie", value: "Transport Munitie" },
+      { label: "Range Rover", value: "Range Rover" },
+      { label: "Mercedes GT", value: "Mercedes GT" },
+      { label: "Trx", value: "Trx" },
+      { label: "Bugati", value: "Bugati" },
+    ],
 };
 
 /* ================= ROLE IDS ================= */
@@ -735,3 +734,4 @@ client.on("interactionCreate", async (interaction) => {
 
 
 client.login(DISCORD_TOKEN);
+
