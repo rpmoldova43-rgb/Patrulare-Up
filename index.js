@@ -2,6 +2,7 @@ console.log("BOT STARTING...");
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
+const { Pool } = require("pg");
 
 const {
   Client,
@@ -51,6 +52,7 @@ const {
   ROLE_COMISAR_SEF_ID,
   ROLE_SUB_CHESTOR_ID,
   ROLE_CHESTOR_GENERAL_ID,
+  DATABASE_URL,
 } = process.env;
 
 if (
@@ -68,6 +70,18 @@ if (
   console.error("❌ Lipsesc variabile în .env");
   process.exit(1);
 }
+
+if (!DATABASE_URL) {
+  console.error("❌ Lipsește DATABASE_URL în .env");
+  process.exit(1);
+}
+
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: DATABASE_URL.includes("railway.internal")
+    ? false
+    : { rejectUnauthorized: false },
+});
 
 const PANEL_TEMP_DELETE_MS = 5 * 60 * 1000;
 const DATA_DIR = process.env.DATA_DIR || __dirname;
@@ -343,6 +357,36 @@ function isUpManager(member) {
   return false;
 }
 
+async function getCazierCountForOfficer(entry) {
+  if (!entry?.officerName) return 0;
+
+  try {
+    const result = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM caziere WHERE user_id = $1`,
+      [entry.officerName]
+    );
+    return result.rows[0]?.count || 0;
+  } catch (err) {
+    console.error("❌ Eroare la citirea caziere:", err);
+    return 0;
+  }
+}
+
+async function getUpBonusData(entry) {
+  const rawHours = msToHours(entry?.totalMs || 0);
+  const cazierCount = await getCazierCountForOfficer(entry);
+
+  const bonusHours = cazierCount * 5;
+  const finalHours = rawHours + bonusHours;
+
+  return {
+    rawHours,
+    cazierCount,
+    bonusHours,
+    finalHours,
+  };
+}
+
 async function sendPromotionLog(guild, member, oldRank, newRank, totalHours) {
   if (!PROMOTION_LOG_CHANNEL_ID || !newRank) return;
 
@@ -368,8 +412,12 @@ async function syncMemberUpRole(member) {
   const stats = readStats();
   const entry = stats[member.id];
 
-  const totalMs = entry?.totalMs || 0;
-  const totalHours = msToHours(totalMs);
+  if (!entry) {
+    return { changed: false, totalHours: 0, oldRank: null, newRank: null };
+  }
+
+  const upData = await getUpBonusData(entry);
+  const totalHours = upData.finalHours;
 
   const targetRank = getHighestRankForHours(totalHours);
   if (!targetRank) {
@@ -392,7 +440,7 @@ async function syncMemberUpRole(member) {
     }
 
     if (!member.roles.cache.has(targetRank.roleId)) {
-      await member.roles.add(targetRank.roleId, "Promovare automată pe baza orelor din patrule");
+      await member.roles.add(targetRank.roleId, "Promovare automată pe baza orelor din patrule și caziere");
     }
 
     return {
@@ -431,52 +479,6 @@ async function syncAllUpRoles(guild) {
 
   return changed;
 }
-
-////////////////////           NOI              /////////////////
-
-function msToHours(ms) {
-  return (ms || 0) / 1000 / 60 / 60;
-}
-
-function formatHours(hours) {
-  return `${Number(hours || 0).toFixed(2)}h`;
-}
-
-function getHighestRankForHours(totalHours) {
-  let result = UP_RANKS[0] || null;
-  for (const rank of UP_RANKS) {
-    if (totalHours >= rank.requiredHours) {
-      result = rank;
-    }
-  }
-  return result;
-}
-
-function getNextRank(rank) {
-  if (!rank) return UP_RANKS[0] || null;
-  return UP_RANKS.find((r) => r.level === rank.level + 1) || null;
-}
-
-function getCurrentRankFromMember(member) {
-  return UP_RANKS.find((rank) => member.roles.cache.has(rank.roleId)) || null;
-}
-
-function safePercent(current, target) {
-  if (!target || target <= 0) return 100;
-  return Math.max(0, Math.min(100, Math.floor((current / target) * 100)));
-}
-
-function isUpManager(member) {
-  if (!member) return false;
-  if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
-  if (member.permissions.has(PermissionFlagsBits.ManageRoles)) return true;
-  if (BOT_OWNER_ID && member.id === BOT_OWNER_ID) return true;
-  if (DEV_ROLE_ID && member.roles.cache.has(DEV_ROLE_ID)) return true;
-  return false;
-}
-
-/////////////////////////////////////////////////////////////
-
 
 function addPatrolStats(patrolData, durationMs) {
   const allStats = readStats();
@@ -552,9 +554,13 @@ function buildSingleOfficerStatsEmbed(entry, position, totalOfficers) {
     .setTimestamp();
 }
 
-function buildUpEmbed(member, entry) {
-  const totalMs = entry?.totalMs || 0;
-  const totalHours = msToHours(totalMs);
+async function buildUpEmbed(member, entry) {
+  const upData = await getUpBonusData(entry);
+
+  const rawHours = upData.rawHours;
+  const cazierCount = upData.cazierCount;
+  const bonusHours = upData.bonusHours;
+  const totalHours = upData.finalHours;
 
   const currentRank = getCurrentRankFromMember(member) || getHighestRankForHours(totalHours);
   const nextRank = getNextRank(currentRank);
@@ -568,79 +574,42 @@ function buildUpEmbed(member, entry) {
     .addFields(
       { name: "Polițist", value: `<@${member.id}>`, inline: true },
       { name: "Grad actual", value: currentRank?.name || "Fără grad", inline: true },
-      { name: "Ore totale", value: formatHours(totalHours), inline: true },
       { name: "Patrule totale", value: String(entry?.patrolCount || 0), inline: true },
+
+      { name: "Ore patrulate", value: formatHours(rawHours), inline: true },
+      { name: "Caziere", value: String(cazierCount), inline: true },
+      { name: "Bonus din caziere", value: `+${formatHours(bonusHours)}`, inline: true },
+
+      { name: "Ore totale UP", value: formatHours(totalHours), inline: true },
       { name: "Următor grad", value: nextRank ? nextRank.name : "Grad maxim atins", inline: true },
-      { name: "Necesar", value: nextRank ? formatHours(nextRank.requiredHours) : "Maxim", inline: true },
       { name: "Ore rămase", value: nextRank ? formatHours(remainingHours) : "0.00h", inline: true },
+
       { name: "Progres", value: `${progress}%`, inline: true }
     )
-    .setFooter({ text: "1 grad nou la fiecare +100 ore de patrulare" })
+    .setFooter({ text: "1 cazier = +5 ore la progresul UP" })
     .setTimestamp();
 }
 
-function buildTopUpEmbed(entries) {
-  const lines = entries.length
-    ? entries.map((entry, index) => {
-        const hours = msToHours(entry.totalMs || 0);
-        const rank = getHighestRankForHours(hours);
-        return `**${index + 1}.** <@${entry.officerId}> — **${formatHours(hours)}** • ${rank?.name || "Fără grad"}`;
-      })
-    : ["Nu există date pentru top UP."];
+async function buildTopUpEmbed(entries) {
+  const lines = [];
+
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const upData = await getUpBonusData(entry);
+    const rank = getHighestRankForHours(upData.finalHours);
+
+    lines.push(
+      `**${i + 1}.** <@${entry.officerId}> — **${formatHours(upData.finalHours)}** • ${rank?.name || "Fără grad"} • Caziere: **${upData.cazierCount}**`
+    );
+  }
 
   return new EmbedBuilder()
     .setColor(0xf1c40f)
     .setTitle("🏆 Top UP Poliție")
-    .setDescription(lines.join("\n"))
-    .setFooter({ text: "Clasament după ore totale din patrule" })
+    .setDescription(lines.length ? lines.join("\n") : "Nu există date pentru top UP.")
+    .setFooter({ text: "Clasament după ore UP totale (patrule + bonus din caziere)" })
     .setTimestamp();
 }
-
-function buildUpEmbed(member, entry) {
-  const totalMs = entry?.totalMs || 0;
-  const totalHours = msToHours(totalMs);
-
-  const currentRank = getCurrentRankFromMember(member) || getHighestRankForHours(totalHours);
-  const nextRank = getNextRank(currentRank);
-
-  const remainingHours = nextRank ? Math.max(0, nextRank.requiredHours - totalHours) : 0;
-  const progress = nextRank ? safePercent(totalHours, nextRank.requiredHours) : 100;
-
-  return new EmbedBuilder()
-    .setColor(0x3498db)
-    .setTitle("📊 Progres UP Poliție")
-    .addFields(
-      { name: "Polițist", value: `<@${member.id}>`, inline: true },
-      { name: "Grad actual", value: currentRank?.name || "Fără grad", inline: true },
-      { name: "Ore totale", value: formatHours(totalHours), inline: true },
-      { name: "Patrule totale", value: String(entry?.patrolCount || 0), inline: true },
-      { name: "Următor grad", value: nextRank ? nextRank.name : "Grad maxim atins", inline: true },
-      { name: "Necesar", value: nextRank ? formatHours(nextRank.requiredHours) : "Maxim", inline: true },
-      { name: "Ore rămase", value: nextRank ? formatHours(remainingHours) : "0.00h", inline: true },
-      { name: "Progres", value: `${progress}%`, inline: true }
-    )
-    .setFooter({ text: "1 grad nou la fiecare +100 ore de patrulare" })
-    .setTimestamp();
-}
-
-function buildTopUpEmbed(entries) {
-  const lines = entries.length
-    ? entries.map((entry, index) => {
-        const hours = msToHours(entry.totalMs || 0);
-        const rank = getHighestRankForHours(hours);
-        return `**${index + 1}.** <@${entry.officerId}> — **${formatHours(hours)}** • ${rank?.name || "Fără grad"}`;
-      })
-    : ["Nu există date pentru top UP."];
-
-  return new EmbedBuilder()
-    .setColor(0xf1c40f)
-    .setTitle("🏆 Top UP Poliție")
-    .setDescription(lines.join("\n"))
-    .setFooter({ text: "Clasament după ore totale din patrule" })
-    .setTimestamp();
-}
-
-
 
 async function updatePatrolStatsMessage(guild) {
   try {
@@ -785,9 +754,11 @@ const commands = [
     .setName("patrula-panel")
     .setDescription("Trimite panelul pentru sistemul de patrule")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages),
+
   new SlashCommandBuilder()
     .setName("statistica-patrule")
     .setDescription("Actualizează mesajul fix cu statistica patrulelor"),
+
   new SlashCommandBuilder()
     .setName("statistica-politist")
     .setDescription("Vezi statistica unui polițist")
@@ -795,8 +766,10 @@ const commands = [
       option
         .setName("politist")
         .setDescription("Selectează polițistul")
-        .setRequired(true)),
-         new SlashCommandBuilder()
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
     .setName("up")
     .setDescription("Vezi progresul UP pentru tine sau pentru alt polițist")
     .addUserOption((option) =>
@@ -844,7 +817,6 @@ client.once("clientReady", async () => {
 });
 
 /* ================= INTERACTIONS ================= */
-
 
 client.on("interactionCreate", async (interaction) => {
   try {
@@ -972,7 +944,7 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         return interaction.reply({
-          embeds: [buildUpEmbed(member, entry)],
+          embeds: [await buildUpEmbed(member, entry)],
           flags: MessageFlags.Ephemeral,
         });
       }
@@ -984,7 +956,7 @@ client.on("interactionCreate", async (interaction) => {
           .slice(0, 10);
 
         return interaction.reply({
-          embeds: [buildTopUpEmbed(entries)],
+          embeds: [await buildTopUpEmbed(entries)],
         });
       }
 
