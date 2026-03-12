@@ -1,17 +1,9 @@
 console.log("BOT STARTING...");
+
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
 const { Pool } = require("pg");
-
-pool.connect()
-  .then((client) => {
-    console.log("✅ Patrulare conectat la Postgres.");
-    client.release();
-  })
-  .catch((err) => {
-    console.error("❌ Patrulare NU se poate conecta la Postgres:", err);
-  });
 
 const {
   Client,
@@ -91,6 +83,16 @@ const pool = new Pool({
     ? false
     : { rejectUnauthorized: false },
 });
+
+pool.connect()
+  .then((client) => {
+    console.log("✅ Patrulare conectat la Postgres.");
+    client.release();
+  })
+  .catch((err) => {
+    console.error("❌ Patrulare NU se poate conecta la Postgres:", err);
+  });
+
 
 const PANEL_TEMP_DELETE_MS = 5 * 60 * 1000;
 const DATA_DIR = process.env.DATA_DIR || __dirname;
@@ -349,7 +351,9 @@ function getNextRank(rank) {
 }
 
 function getCurrentRankFromMember(member) {
-  return UP_RANKS.find((rank) => member.roles.cache.has(rank.roleId)) || null;
+  const ownedRanks = UP_RANKS.filter((rank) => member.roles.cache.has(rank.roleId));
+  if (!ownedRanks.length) return null;
+  return ownedRanks[ownedRanks.length - 1];
 }
 
 function safePercent(current, target) {
@@ -428,43 +432,80 @@ async function syncMemberUpRole(member) {
   const upData = await getUpBonusData(entry);
   const totalHours = upData.finalHours;
 
-  const targetRank = getHighestRankForHours(totalHours);
-  if (!targetRank) {
-    return { changed: false, totalHours, oldRank: null, newRank: null };
-  }
-
   const currentRank = getCurrentRankFromMember(member);
 
-  if (currentRank && currentRank.level === targetRank.level) {
-    return { changed: false, totalHours, oldRank: currentRank, newRank: targetRank };
-  }
-
-  const rolesToRemove = ALL_UP_ROLE_IDS.filter(
-    (roleId) => member.roles.cache.has(roleId) && roleId !== targetRank.roleId
-  );
-
-  try {
-    if (rolesToRemove.length) {
-      await member.roles.remove(rolesToRemove, "Actualizare automată grad pe baza UP");
+  // dacă nu are niciun rol UP, îi dăm unul după orele actuale
+  if (!currentRank) {
+    const targetRank = getHighestRankForHours(totalHours);
+    if (!targetRank) {
+      return { changed: false, totalHours, oldRank: null, newRank: null };
     }
 
-    if (!member.roles.cache.has(targetRank.roleId)) {
-      await member.roles.add(targetRank.roleId, "Promovare automată pe baza orelor din patrule și caziere");
+    try {
+      await member.roles.add(targetRank.roleId, "Setare grad inițial pe baza orelor UP");
+      return {
+        changed: true,
+        totalHours,
+        oldRank: null,
+        newRank: targetRank,
+      };
+    } catch (err) {
+      console.error(`❌ Eroare la setarea gradului inițial pentru ${member.user.tag}:`, err);
+      return {
+        changed: false,
+        totalHours,
+        oldRank: null,
+        newRank: targetRank,
+        error: err,
+      };
+    }
+  }
+
+  const nextRank = getNextRank(currentRank);
+  if (!nextRank) {
+    return {
+      changed: false,
+      totalHours,
+      oldRank: currentRank,
+      newRank: currentRank,
+    };
+  }
+
+  if (totalHours < nextRank.requiredHours) {
+    return {
+      changed: false,
+      totalHours,
+      oldRank: currentRank,
+      newRank: currentRank,
+    };
+  }
+
+  try {
+    const rolesToRemove = UP_RANKS
+      .filter((rank) => rank.level < nextRank.level && member.roles.cache.has(rank.roleId))
+      .map((rank) => rank.roleId);
+
+    if (rolesToRemove.length) {
+      await member.roles.remove(rolesToRemove, "Curățare grade vechi după promovare");
+    }
+
+    if (!member.roles.cache.has(nextRank.roleId)) {
+      await member.roles.add(nextRank.roleId, "Promovare automată pe baza orelor din patrule și caziere");
     }
 
     return {
       changed: true,
       totalHours,
       oldRank: currentRank,
-      newRank: targetRank,
+      newRank: nextRank,
     };
   } catch (err) {
-    console.error(`❌ Eroare la sync UP pentru ${member.user.tag}:`, err);
+    console.error(`❌ Eroare la promovarea UP pentru ${member.user.tag}:`, err);
     return {
       changed: false,
       totalHours,
       oldRank: currentRank,
-      newRank: targetRank,
+      newRank: currentRank,
       error: err,
     };
   }
