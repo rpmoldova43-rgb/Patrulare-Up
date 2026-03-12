@@ -70,7 +70,16 @@ if (
 }
 
 const PANEL_TEMP_DELETE_MS = 5 * 60 * 1000;
-const STATS_FILE = path.join(__dirname, "patrol-stats.json");
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+const STATS_FILE = path.join(DATA_DIR, "patrol-stats.json");
+
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+if (!fs.existsSync(STATS_FILE)) {
+  fs.writeFileSync(STATS_FILE, "{}", "utf8");
+}
 
 /* ================= VEHICLE LIST PE GRADE ================= */
 
