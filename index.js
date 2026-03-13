@@ -433,12 +433,15 @@ async function syncMemberUpRole(member) {
   const upData = await getUpBonusData(entry);
   const totalHours = upData.finalHours;
 
+  // caută cel mai mare grad pe care îl are deja pe Discord
   const currentRank = getCurrentRankFromMember(member);
 
-  // daca are deja grad, nu facem downgrade
+  // IMPORTANT:
+  // dacă are deja grad, NU îi scădem nimic niciodată
   if (currentRank) {
     const nextRank = getNextRank(currentRank);
 
+    // dacă e deja la gradul maxim, nu facem nimic
     if (!nextRank) {
       return {
         changed: false,
@@ -448,6 +451,7 @@ async function syncMemberUpRole(member) {
       };
     }
 
+    // dacă nu are încă ore pentru gradul următor, rămâne exact cu gradul actual
     if (totalHours < nextRank.requiredHours) {
       return {
         changed: false,
@@ -458,6 +462,7 @@ async function syncMemberUpRole(member) {
     }
 
     try {
+      // adaugă DOAR gradul următor
       if (!member.roles.cache.has(nextRank.roleId)) {
         await member.roles.add(
           nextRank.roleId,
@@ -465,6 +470,7 @@ async function syncMemberUpRole(member) {
         );
       }
 
+      // NU scoatem grade vechi
       return {
         changed: true,
         totalHours,
@@ -482,7 +488,7 @@ async function syncMemberUpRole(member) {
     }
   }
 
-  // daca nu are niciun grad UP
+  // dacă NU are niciun grad UP, primește gradul calculat după ore
   const targetRank = getHighestRankForHours(totalHours);
 
   if (!targetRank) {
@@ -511,35 +517,6 @@ async function syncMemberUpRole(member) {
     };
   }
 }
-
-  // daca NU are niciun grad, primește gradul initial dupa ore
-  const targetRank = getHighestRankForHours(totalHours);
-  if (!targetRank) {
-    return { changed: false, totalHours, oldRank: null, newRank: null };
-  }
-
-  try {
-    await member.roles.add(
-      targetRank.roleId,
-      "Setare grad inițial pe baza orelor UP"
-    );
-
-    return {
-      changed: true,
-      totalHours,
-      oldRank: null,
-      newRank: targetRank,
-    };
-  } catch (err) {
-    console.error(`❌ Eroare la setarea gradului inițial pentru ${member.user.tag}:`, err);
-    return {
-      changed: false,
-      totalHours,
-      oldRank: null,
-      newRank: targetRank,
-      error: err,
-    };
-  }
 
 
 async function syncAllUpRoles(guild) {
