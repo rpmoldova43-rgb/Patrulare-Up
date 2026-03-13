@@ -353,7 +353,11 @@ function getNextRank(rank) {
 function getCurrentRankFromMember(member) {
   const ownedRanks = UP_RANKS.filter((rank) => member.roles.cache.has(rank.roleId));
   if (!ownedRanks.length) return null;
-  return ownedRanks[ownedRanks.length - 1];
+
+  return ownedRanks.reduce((highest, rank) => {
+    if (!highest) return rank;
+    return rank.level > highest.level ? rank : highest;
+  }, null);
 }
 
 function safePercent(current, target) {
@@ -433,87 +437,93 @@ async function syncMemberUpRole(member) {
   const upData = await getUpBonusData(entry);
   const totalHours = upData.finalHours;
 
-  // caută cel mai mare grad pe care îl are deja pe Discord
+  // cel mai mare grad pe care il are deja pe Discord
   const currentRank = getCurrentRankFromMember(member);
 
-  // IMPORTANT:
-  // dacă are deja grad, NU îi scădem nimic niciodată
-  if (currentRank) {
-    const nextRank = getNextRank(currentRank);
+  // gradul pe care il merita dupa ore
+  const earnedRank = getHighestRankForHours(totalHours);
 
-    // dacă e deja la gradul maxim, nu facem nimic
-    if (!nextRank) {
-      return {
-        changed: false,
-        totalHours,
-        oldRank: currentRank,
-        newRank: currentRank,
-      };
-    }
+  // alegem mereu gradul mai mare dintre:
+  // - ce are deja pe Discord
+  // - ce merita dupa ore
+  let protectedRank = null;
 
-    // dacă nu are încă ore pentru gradul următor, rămâne exact cu gradul actual
-    if (totalHours < nextRank.requiredHours) {
-      return {
-        changed: false,
-        totalHours,
-        oldRank: currentRank,
-        newRank: currentRank,
-      };
-    }
+  if (currentRank && earnedRank) {
+    protectedRank = currentRank.level >= earnedRank.level ? currentRank : earnedRank;
+  } else {
+    protectedRank = currentRank || earnedRank || null;
+  }
 
-    try {
-      // adaugă DOAR gradul următor
-      if (!member.roles.cache.has(nextRank.roleId)) {
-        await member.roles.add(
-          nextRank.roleId,
-          "Promovare automată pe baza orelor din patrule și caziere"
-        );
-      }
+  if (!protectedRank) {
+    return { changed: false, totalHours, oldRank: null, newRank: null };
+  }
 
-      // NU scoatem grade vechi
+  const nextRank = getNextRank(protectedRank);
+
+  // daca nu are gradul protejat, il adaugam
+  try {
+    if (!member.roles.cache.has(protectedRank.roleId)) {
+      await member.roles.add(
+        protectedRank.roleId,
+        "Protejare grad existent / sincronizare UP fara downgrade"
+      );
+
       return {
         changed: true,
         totalHours,
         oldRank: currentRank,
-        newRank: nextRank,
+        newRank: protectedRank,
       };
-    } catch (err) {
-      console.error("❌ Eroare UP:", err);
+    }
+
+    // daca nu exista grad urmator, ramane asa
+    if (!nextRank) {
       return {
         changed: false,
         totalHours,
-        oldRank: currentRank,
-        newRank: currentRank,
+        oldRank: protectedRank,
+        newRank: protectedRank,
       };
     }
-  }
 
-  // dacă NU are niciun grad UP, primește gradul calculat după ore
-  const targetRank = getHighestRankForHours(totalHours);
+    // daca nu are inca ore pentru gradul urmator, NU facem nimic
+    if (totalHours < nextRank.requiredHours) {
+      return {
+        changed: false,
+        totalHours,
+        oldRank: protectedRank,
+        newRank: protectedRank,
+      };
+    }
 
-  if (!targetRank) {
-    return { changed: false, totalHours, oldRank: null, newRank: null };
-  }
+    // are ore suficiente => ii dam doar gradul urmator
+    if (!member.roles.cache.has(nextRank.roleId)) {
+      await member.roles.add(
+        nextRank.roleId,
+        "Promovare automata pe baza orelor din patrule si caziere"
+      );
 
-  try {
-    await member.roles.add(
-      targetRank.roleId,
-      "Setare grad inițial UP"
-    );
+      return {
+        changed: true,
+        totalHours,
+        oldRank: protectedRank,
+        newRank: nextRank,
+      };
+    }
 
-    return {
-      changed: true,
-      totalHours,
-      oldRank: null,
-      newRank: targetRank,
-    };
-  } catch (err) {
-    console.error("❌ Eroare grad initial:", err);
     return {
       changed: false,
       totalHours,
-      oldRank: null,
-      newRank: targetRank,
+      oldRank: protectedRank,
+      newRank: protectedRank,
+    };
+  } catch (err) {
+    console.error("❌ Eroare syncMemberUpRole:", err);
+    return {
+      changed: false,
+      totalHours,
+      oldRank: protectedRank,
+      newRank: protectedRank,
     };
   }
 }
