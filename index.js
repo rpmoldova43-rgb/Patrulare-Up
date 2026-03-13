@@ -402,6 +402,7 @@ async function getUpBonusData(entry) {
 
 async function sendPromotionLog(guild, member, oldRank, newRank, totalHours) {
   if (!PROMOTION_LOG_CHANNEL_ID || !newRank) return;
+  if (oldRank && newRank && oldRank.level >= newRank.level) return;
 
   const channel = await guild.channels.fetch(PROMOTION_LOG_CHANNEL_ID).catch(() => null);
   if (!channel || channel.type !== ChannelType.GuildText) return;
@@ -433,9 +434,13 @@ async function syncMemberUpRole(member) {
   const totalHours = upData.finalHours;
 
   const currentRank = getCurrentRankFromMember(member);
-  console.log("DEBUG RANK:", member.user.tag, currentRank?.name || "NICIUN GRAD");
 
-  // dacă are deja un grad, NU face downgrade
+  console.log("DEBUG sync:", member.user.tag, {
+    totalHours,
+    currentRank: currentRank?.name || "NONE",
+  });
+
+  // daca are deja grad, NU ii scade gradul niciodata
   if (currentRank) {
     const nextRank = getNextRank(currentRank);
 
@@ -459,7 +464,10 @@ async function syncMemberUpRole(member) {
 
     try {
       if (!member.roles.cache.has(nextRank.roleId)) {
-        await member.roles.add(nextRank.roleId, "Promovare automată pe baza orelor din patrule și caziere");
+        await member.roles.add(
+          nextRank.roleId,
+          "Promovare automată pe baza orelor din patrule și caziere"
+        );
       }
 
       return {
@@ -480,7 +488,7 @@ async function syncMemberUpRole(member) {
     }
   }
 
-  // doar dacă NU are niciun grad UP
+  // daca NU are niciun grad, abia atunci primește gradul initial
   const targetRank = getHighestRankForHours(totalHours);
   if (!targetRank) {
     return { changed: false, totalHours, oldRank: null, newRank: null };
@@ -488,6 +496,7 @@ async function syncMemberUpRole(member) {
 
   try {
     await member.roles.add(targetRank.roleId, "Setare grad inițial pe baza orelor UP");
+
     return {
       changed: true,
       totalHours,
@@ -502,16 +511,6 @@ async function syncMemberUpRole(member) {
       oldRank: null,
       newRank: targetRank,
       error: err,
-    };
-  }
-
-  const nextRank = getNextRank(currentRank);
-  if (!nextRank) {
-    return {
-      changed: false,
-      totalHours,
-      oldRank: currentRank,
-      newRank: currentRank,
     };
   }
 
