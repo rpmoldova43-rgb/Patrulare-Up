@@ -463,6 +463,21 @@ async function syncMemberUpRole(member) {
     }
 
     try {
+      // sterge doar gradele UP mai mici decat gradul nou
+      const rolesToRemove = UP_RANKS
+        .filter(
+          (rank) =>
+            rank.level < nextRank.level && member.roles.cache.has(rank.roleId)
+        )
+        .map((rank) => rank.roleId);
+
+      if (rolesToRemove.length) {
+        await member.roles.remove(
+          rolesToRemove,
+          "Curățare grade vechi după promovare"
+        );
+      }
+
       if (!member.roles.cache.has(nextRank.roleId)) {
         await member.roles.add(
           nextRank.roleId,
@@ -488,14 +503,17 @@ async function syncMemberUpRole(member) {
     }
   }
 
-  // daca NU are niciun grad, abia atunci primește gradul initial
+  // daca NU are niciun grad, primește gradul initial dupa ore
   const targetRank = getHighestRankForHours(totalHours);
   if (!targetRank) {
     return { changed: false, totalHours, oldRank: null, newRank: null };
   }
 
   try {
-    await member.roles.add(targetRank.roleId, "Setare grad inițial pe baza orelor UP");
+    await member.roles.add(
+      targetRank.roleId,
+      "Setare grad inițial pe baza orelor UP"
+    );
 
     return {
       changed: true,
@@ -510,45 +528,6 @@ async function syncMemberUpRole(member) {
       totalHours,
       oldRank: null,
       newRank: targetRank,
-      error: err,
-    };
-  }
-
-  if (totalHours < nextRank.requiredHours) {
-    return {
-      changed: false,
-      totalHours,
-      oldRank: currentRank,
-      newRank: currentRank,
-    };
-  }
-
-  try {
-    const rolesToRemove = UP_RANKS
-      .filter((rank) => rank.level < nextRank.level && member.roles.cache.has(rank.roleId))
-      .map((rank) => rank.roleId);
-
-    if (rolesToRemove.length) {
-      await member.roles.remove(rolesToRemove, "Curățare grade vechi după promovare");
-    }
-
-    if (!member.roles.cache.has(nextRank.roleId)) {
-      await member.roles.add(nextRank.roleId, "Promovare automată pe baza orelor din patrule și caziere");
-    }
-
-    return {
-      changed: true,
-      totalHours,
-      oldRank: currentRank,
-      newRank: nextRank,
-    };
-  } catch (err) {
-    console.error(`❌ Eroare la promovarea UP pentru ${member.user.tag}:`, err);
-    return {
-      changed: false,
-      totalHours,
-      oldRank: currentRank,
-      newRank: currentRank,
       error: err,
     };
   }
