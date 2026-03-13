@@ -1,9 +1,7 @@
 console.log("BOT STARTING...");
-
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
-const { Pool } = require("pg");
 
 const {
   Client,
@@ -53,7 +51,6 @@ const {
   ROLE_COMISAR_SEF_ID,
   ROLE_SUB_CHESTOR_ID,
   ROLE_CHESTOR_GENERAL_ID,
-  DATABASE_URL,
 } = process.env;
 
 if (
@@ -72,39 +69,8 @@ if (
   process.exit(1);
 }
 
-if (!DATABASE_URL) {
-  console.error("❌ Lipsește DATABASE_URL în .env");
-  process.exit(1);
-}
-
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  ssl: DATABASE_URL.includes("railway.internal")
-    ? false
-    : { rejectUnauthorized: false },
-});
-
-pool.connect()
-  .then((client) => {
-    console.log("✅ Patrulare conectat la Postgres.");
-    client.release();
-  })
-  .catch((err) => {
-    console.error("❌ Patrulare NU se poate conecta la Postgres:", err);
-  });
-
-
 const PANEL_TEMP_DELETE_MS = 5 * 60 * 1000;
-const DATA_DIR = process.env.DATA_DIR || __dirname;
-const STATS_FILE = path.join(DATA_DIR, "patrol-stats.json");
-
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-
-if (!fs.existsSync(STATS_FILE)) {
-  fs.writeFileSync(STATS_FILE, "{}", "utf8");
-}
+const STATS_FILE = path.join(__dirname, "patrol-stats.json");
 
 /* ================= VEHICLE LIST PE GRADE ================= */
 
@@ -241,8 +207,8 @@ const RANK_ROLES = {
   subcomisar: ROLE_SUBCOMISAR_ID || "1479938369101234217",
   comisar: ROLE_COMISAR_ID || "1479938441096597625",
   comisar_sef: ROLE_COMISAR_SEF_ID || "1479938499057680406",
-  sub_chestor: ROLE_SUB_CHESTOR_ID || "1479938560432934953",
-  chestor_general: ROLE_CHESTOR_GENERAL_ID || "1479938620268871764",
+  sub_chestor: ROLE_SUB_CHESTOR_ID || "1481376606508285952",
+  chestor_general: ROLE_CHESTOR_GENERAL_ID || "1474582052312711278",
 };
 
 const UP_RANKS = [
@@ -351,13 +317,7 @@ function getNextRank(rank) {
 }
 
 function getCurrentRankFromMember(member) {
-  const ownedRanks = UP_RANKS.filter((rank) => member.roles.cache.has(rank.roleId));
-  if (!ownedRanks.length) return null;
-
-  return ownedRanks.reduce((highest, rank) => {
-    if (!highest) return rank;
-    return rank.level > highest.level ? rank : highest;
-  }, null);
+  return UP_RANKS.find((rank) => member.roles.cache.has(rank.roleId)) || null;
 }
 
 function safePercent(current, target) {
@@ -374,39 +334,8 @@ function isUpManager(member) {
   return false;
 }
 
-async function getCazierCountForOfficer(entry) {
-  if (!entry?.officerId) return 0;
-
-  try {
-    const result = await pool.query(
-      `SELECT COUNT(*)::int AS count FROM caziere WHERE added_by = $1`,
-      [entry.officerId]
-    );
-    return result.rows[0]?.count || 0;
-  } catch (err) {
-    console.error("❌ Eroare la citirea caziere:", err);
-    return 0;
-  }
-}
-
-async function getUpBonusData(entry) {
-  const rawHours = msToHours(entry?.totalMs || 0);
-  const cazierCount = await getCazierCountForOfficer(entry);
-
-  const bonusHours = cazierCount * 5;
-  const finalHours = rawHours + bonusHours;
-
-  return {
-    rawHours,
-    cazierCount,
-    bonusHours,
-    finalHours,
-  };
-}
-
 async function sendPromotionLog(guild, member, oldRank, newRank, totalHours) {
   if (!PROMOTION_LOG_CHANNEL_ID || !newRank) return;
-  if (oldRank && newRank && oldRank.level >= newRank.level) return;
 
   const channel = await guild.channels.fetch(PROMOTION_LOG_CHANNEL_ID).catch(() => null);
   if (!channel || channel.type !== ChannelType.GuildText) return;
@@ -430,217 +359,47 @@ async function syncMemberUpRole(member) {
   const stats = readStats();
   const entry = stats[member.id];
 
-  if (!entry) {
-    return { changed: false, totalHours: 0, oldRank: null, newRank: null };
-  }
+  const totalMs = entry?.totalMs || 0;
+  const totalHours = msToHours(totalMs);
 
-  const upData = await getUpBonusData(entry);
-  const totalHours = upData.finalHours;
-
-  // cel mai mare grad pe care il are deja pe Discord
-  const currentRank = getCurrentRankFromMember(member);
-
-  // gradul pe care il merita dupa ore
-  const earnedRank = getHighestRankForHours(totalHours);
-
-  // alegem mereu gradul mai mare dintre:
-  // - ce are deja pe Discord
-  // - ce merita dupa ore
-  let protectedRank = null;
-
-  if (currentRank && earnedRank) {
-    protectedRank = currentRank.level >= earnedRank.level ? currentRank : earnedRank;
-  } else {
-    protectedRank = currentRank || earnedRank || null;
-  }
-
-  if (!protectedRank) {
+  const targetRank = getHighestRankForHours(totalHours);
+  if (!targetRank) {
     return { changed: false, totalHours, oldRank: null, newRank: null };
   }
 
-  const nextRank = getNextRank(protectedRank);
-
-  // daca nu are gradul protejat, il adaugam
-  try {
-    if (!member.roles.cache.has(protectedRank.roleId)) {
-      await member.roles.add(
-        protectedRank.roleId,
-        "Protejare grad existent / sincronizare UP fara downgrade"
-      );
-
-      return {
-        changed: true,
-        totalHours,
-        oldRank: currentRank,
-        newRank: protectedRank,
-      };
-    }
-
-    // daca nu exista grad urmator, ramane asa
-    if (!nextRank) {
-      return {
-        changed: false,
-        totalHours,
-        oldRank: protectedRank,
-        newRank: protectedRank,
-      };
-    }
-
-    // daca nu are inca ore pentru gradul urmator, NU facem nimic
-    if (totalHours < nextRank.requiredHours) {
-      return {
-        changed: false,
-        totalHours,
-        oldRank: protectedRank,
-        newRank: protectedRank,
-      };
-    }
-
-    // are ore suficiente => ii dam doar gradul urmator
-    if (!member.roles.cache.has(nextRank.roleId)) {
-      await member.roles.add(
-        nextRank.roleId,
-        "Promovare automata pe baza orelor din patrule si caziere"
-      );
-
-      return {
-        changed: true,
-        totalHours,
-        oldRank: protectedRank,
-        newRank: nextRank,
-      };
-    }
-
-    return {
-      changed: false,
-      totalHours,
-      oldRank: protectedRank,
-      newRank: protectedRank,
-    };
-  } catch (err) {
-    console.error("❌ Eroare syncMemberUpRole:", err);
-    return {
-      changed: false,
-      totalHours,
-      oldRank: protectedRank,
-      newRank: protectedRank,
-    };
-  }
-}
-
-console.log("[UP DEBUG]", {
-  user: member.user.tag,
-  currentRank: currentRank?.name || null,
-  earnedRank: earnedRank?.name || null,
-  protectedRank: protectedRank?.name || null,
-  nextRank: nextRank?.name || null,
-  totalHours,
-});
-
-
-async function syncMemberUpRole(member) {
-  const stats = readStats();
-  const entry = stats[member.id];
-
-  if (!entry) {
-    console.log(`[SYNCUP] ${member.user.tag} -> fara entry`);
-    return { changed: false, totalHours: 0, oldRank: null, newRank: null };
-  }
-
-  const upData = await getUpBonusData(entry);
-  const totalHours = upData.finalHours;
-
   const currentRank = getCurrentRankFromMember(member);
-  const earnedRank = getHighestRankForHours(totalHours);
 
-  let protectedRank = null;
-
-  if (currentRank && earnedRank) {
-    protectedRank = currentRank.level >= earnedRank.level ? currentRank : earnedRank;
-  } else {
-    protectedRank = currentRank || earnedRank || null;
+  if (currentRank && currentRank.level === targetRank.level) {
+    return { changed: false, totalHours, oldRank: currentRank, newRank: targetRank };
   }
 
-  const nextRank = getNextRank(protectedRank);
-
-  console.log("[SYNCUP DEBUG]", {
-    user: member.user.tag,
-    currentRank: currentRank?.name || null,
-    earnedRank: earnedRank?.name || null,
-    protectedRank: protectedRank?.name || null,
-    nextRank: nextRank?.name || null,
-    totalHours,
-    rolesNow: member.roles.cache.map(r => `${r.name} (${r.id})`)
-  });
-
-  if (!protectedRank) {
-    return { changed: false, totalHours, oldRank: null, newRank: null };
-  }
+  const rolesToRemove = ALL_UP_ROLE_IDS.filter(
+    (roleId) => member.roles.cache.has(roleId) && roleId !== targetRank.roleId
+  );
 
   try {
-    if (!member.roles.cache.has(protectedRank.roleId)) {
-      console.log(`[SYNCUP] ADD protectedRank -> ${member.user.tag}: ${protectedRank.name}`);
-      await member.roles.add(
-        protectedRank.roleId,
-        "Protejare grad existent / sincronizare UP fara downgrade"
-      );
-
-      return {
-        changed: true,
-        totalHours,
-        oldRank: currentRank,
-        newRank: protectedRank,
-      };
+    if (rolesToRemove.length) {
+      await member.roles.remove(rolesToRemove, "Actualizare automată grad pe baza UP");
     }
 
-    if (!nextRank) {
-      console.log(`[SYNCUP] ${member.user.tag} deja la grad maxim protejat`);
-      return {
-        changed: false,
-        totalHours,
-        oldRank: protectedRank,
-        newRank: protectedRank,
-      };
-    }
-
-    if (totalHours < nextRank.requiredHours) {
-      console.log(`[SYNCUP] ${member.user.tag} NU are ore pentru urmatorul grad`);
-      return {
-        changed: false,
-        totalHours,
-        oldRank: protectedRank,
-        newRank: protectedRank,
-      };
-    }
-
-    if (!member.roles.cache.has(nextRank.roleId)) {
-      console.log(`[SYNCUP] ADD nextRank -> ${member.user.tag}: ${nextRank.name}`);
-      await member.roles.add(
-        nextRank.roleId,
-        "Promovare automata pe baza orelor din patrule si caziere"
-      );
-
-      return {
-        changed: true,
-        totalHours,
-        oldRank: protectedRank,
-        newRank: nextRank,
-      };
+    if (!member.roles.cache.has(targetRank.roleId)) {
+      await member.roles.add(targetRank.roleId, "Promovare automată pe baza orelor din patrule");
     }
 
     return {
-      changed: false,
+      changed: true,
       totalHours,
-      oldRank: protectedRank,
-      newRank: protectedRank,
+      oldRank: currentRank,
+      newRank: targetRank,
     };
   } catch (err) {
-    console.error("❌ Eroare syncMemberUpRole:", err);
+    console.error(`❌ Eroare la sync UP pentru ${member.user.tag}:`, err);
     return {
       changed: false,
       totalHours,
-      oldRank: protectedRank,
-      newRank: protectedRank,
+      oldRank: currentRank,
+      newRank: targetRank,
+      error: err,
     };
   }
 }
@@ -663,6 +422,52 @@ async function syncAllUpRoles(guild) {
 
   return changed;
 }
+
+////////////////////           NOI              /////////////////
+
+function msToHours(ms) {
+  return (ms || 0) / 1000 / 60 / 60;
+}
+
+function formatHours(hours) {
+  return `${Number(hours || 0).toFixed(2)}h`;
+}
+
+function getHighestRankForHours(totalHours) {
+  let result = UP_RANKS[0] || null;
+  for (const rank of UP_RANKS) {
+    if (totalHours >= rank.requiredHours) {
+      result = rank;
+    }
+  }
+  return result;
+}
+
+function getNextRank(rank) {
+  if (!rank) return UP_RANKS[0] || null;
+  return UP_RANKS.find((r) => r.level === rank.level + 1) || null;
+}
+
+function getCurrentRankFromMember(member) {
+  return UP_RANKS.find((rank) => member.roles.cache.has(rank.roleId)) || null;
+}
+
+function safePercent(current, target) {
+  if (!target || target <= 0) return 100;
+  return Math.max(0, Math.min(100, Math.floor((current / target) * 100)));
+}
+
+function isUpManager(member) {
+  if (!member) return false;
+  if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
+  if (member.permissions.has(PermissionFlagsBits.ManageRoles)) return true;
+  if (BOT_OWNER_ID && member.id === BOT_OWNER_ID) return true;
+  if (DEV_ROLE_ID && member.roles.cache.has(DEV_ROLE_ID)) return true;
+  return false;
+}
+
+/////////////////////////////////////////////////////////////
+
 
 function addPatrolStats(patrolData, durationMs) {
   const allStats = readStats();
@@ -738,13 +543,9 @@ function buildSingleOfficerStatsEmbed(entry, position, totalOfficers) {
     .setTimestamp();
 }
 
-async function buildUpEmbed(member, entry) {
-  const upData = await getUpBonusData(entry);
-
-  const rawHours = upData.rawHours;
-  const cazierCount = upData.cazierCount;
-  const bonusHours = upData.bonusHours;
-  const totalHours = upData.finalHours;
+function buildUpEmbed(member, entry) {
+  const totalMs = entry?.totalMs || 0;
+  const totalHours = msToHours(totalMs);
 
   const currentRank = getCurrentRankFromMember(member) || getHighestRankForHours(totalHours);
   const nextRank = getNextRank(currentRank);
@@ -758,42 +559,79 @@ async function buildUpEmbed(member, entry) {
     .addFields(
       { name: "Polițist", value: `<@${member.id}>`, inline: true },
       { name: "Grad actual", value: currentRank?.name || "Fără grad", inline: true },
+      { name: "Ore totale", value: formatHours(totalHours), inline: true },
       { name: "Patrule totale", value: String(entry?.patrolCount || 0), inline: true },
-
-      { name: "Ore patrulate", value: formatHours(rawHours), inline: true },
-      { name: "Caziere", value: String(cazierCount), inline: true },
-      { name: "Bonus din caziere", value: `+${formatHours(bonusHours)}`, inline: true },
-
-      { name: "Ore totale UP", value: formatHours(totalHours), inline: true },
       { name: "Următor grad", value: nextRank ? nextRank.name : "Grad maxim atins", inline: true },
+      { name: "Necesar", value: nextRank ? formatHours(nextRank.requiredHours) : "Maxim", inline: true },
       { name: "Ore rămase", value: nextRank ? formatHours(remainingHours) : "0.00h", inline: true },
-
       { name: "Progres", value: `${progress}%`, inline: true }
     )
-    .setFooter({ text: "1 cazier = +5 ore la progresul UP" })
+    .setFooter({ text: "1 grad nou la fiecare +100 ore de patrulare" })
     .setTimestamp();
 }
 
-async function buildTopUpEmbed(entries) {
-  const lines = [];
-
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
-    const upData = await getUpBonusData(entry);
-    const rank = getHighestRankForHours(upData.finalHours);
-
-    lines.push(
-      `**${i + 1}.** <@${entry.officerId}> — **${formatHours(upData.finalHours)}** • ${rank?.name || "Fără grad"} • Caziere: **${upData.cazierCount}**`
-    );
-  }
+function buildTopUpEmbed(entries) {
+  const lines = entries.length
+    ? entries.map((entry, index) => {
+        const hours = msToHours(entry.totalMs || 0);
+        const rank = getHighestRankForHours(hours);
+        return `**${index + 1}.** <@${entry.officerId}> — **${formatHours(hours)}** • ${rank?.name || "Fără grad"}`;
+      })
+    : ["Nu există date pentru top UP."];
 
   return new EmbedBuilder()
     .setColor(0xf1c40f)
     .setTitle("🏆 Top UP Poliție")
-    .setDescription(lines.length ? lines.join("\n") : "Nu există date pentru top UP.")
-    .setFooter({ text: "Clasament după ore UP totale (patrule + bonus din caziere)" })
+    .setDescription(lines.join("\n"))
+    .setFooter({ text: "Clasament după ore totale din patrule" })
     .setTimestamp();
 }
+
+function buildUpEmbed(member, entry) {
+  const totalMs = entry?.totalMs || 0;
+  const totalHours = msToHours(totalMs);
+
+  const currentRank = getCurrentRankFromMember(member) || getHighestRankForHours(totalHours);
+  const nextRank = getNextRank(currentRank);
+
+  const remainingHours = nextRank ? Math.max(0, nextRank.requiredHours - totalHours) : 0;
+  const progress = nextRank ? safePercent(totalHours, nextRank.requiredHours) : 100;
+
+  return new EmbedBuilder()
+    .setColor(0x3498db)
+    .setTitle("📊 Progres UP Poliție")
+    .addFields(
+      { name: "Polițist", value: `<@${member.id}>`, inline: true },
+      { name: "Grad actual", value: currentRank?.name || "Fără grad", inline: true },
+      { name: "Ore totale", value: formatHours(totalHours), inline: true },
+      { name: "Patrule totale", value: String(entry?.patrolCount || 0), inline: true },
+      { name: "Următor grad", value: nextRank ? nextRank.name : "Grad maxim atins", inline: true },
+      { name: "Necesar", value: nextRank ? formatHours(nextRank.requiredHours) : "Maxim", inline: true },
+      { name: "Ore rămase", value: nextRank ? formatHours(remainingHours) : "0.00h", inline: true },
+      { name: "Progres", value: `${progress}%`, inline: true }
+    )
+    .setFooter({ text: "1 grad nou la fiecare +100 ore de patrulare" })
+    .setTimestamp();
+}
+
+function buildTopUpEmbed(entries) {
+  const lines = entries.length
+    ? entries.map((entry, index) => {
+        const hours = msToHours(entry.totalMs || 0);
+        const rank = getHighestRankForHours(hours);
+        return `**${index + 1}.** <@${entry.officerId}> — **${formatHours(hours)}** • ${rank?.name || "Fără grad"}`;
+      })
+    : ["Nu există date pentru top UP."];
+
+  return new EmbedBuilder()
+    .setColor(0xf1c40f)
+    .setTitle("🏆 Top UP Poliție")
+    .setDescription(lines.join("\n"))
+    .setFooter({ text: "Clasament după ore totale din patrule" })
+    .setTimestamp();
+}
+
+
 
 async function updatePatrolStatsMessage(guild) {
   try {
@@ -938,11 +776,9 @@ const commands = [
     .setName("patrula-panel")
     .setDescription("Trimite panelul pentru sistemul de patrule")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages),
-
   new SlashCommandBuilder()
     .setName("statistica-patrule")
     .setDescription("Actualizează mesajul fix cu statistica patrulelor"),
-
   new SlashCommandBuilder()
     .setName("statistica-politist")
     .setDescription("Vezi statistica unui polițist")
@@ -950,10 +786,8 @@ const commands = [
       option
         .setName("politist")
         .setDescription("Selectează polițistul")
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
+        .setRequired(true)),
+         new SlashCommandBuilder()
     .setName("up")
     .setDescription("Vezi progresul UP pentru tine sau pentru alt polițist")
     .addUserOption((option) =>
@@ -1000,21 +834,8 @@ client.once("clientReady", async () => {
   }
 });
 
-
-client.on("guildMemberUpdate", (oldMember, newMember) => {
-  const oldRoles = new Set(oldMember.roles.cache.keys());
-  const newRoles = new Set(newMember.roles.cache.keys());
-
-  const added = [...newRoles].filter(id => !oldRoles.has(id));
-  const removed = [...oldRoles].filter(id => !newRoles.has(id));
-
-  if (added.length || removed.length) {
-    console.log(`[ROLE UPDATE] ${newMember.user.tag}`);
-    if (added.length) console.log("  ADDED:", added);
-    if (removed.length) console.log("  REMOVED:", removed);
-  }
-});
 /* ================= INTERACTIONS ================= */
+
 
 client.on("interactionCreate", async (interaction) => {
   try {
@@ -1142,7 +963,7 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         return interaction.reply({
-          embeds: [await buildUpEmbed(member, entry)],
+          embeds: [buildUpEmbed(member, entry)],
           flags: MessageFlags.Ephemeral,
         });
       }
@@ -1154,7 +975,7 @@ client.on("interactionCreate", async (interaction) => {
           .slice(0, 10);
 
         return interaction.reply({
-          embeds: [await buildTopUpEmbed(entries)],
+          embeds: [buildTopUpEmbed(entries)],
         });
       }
 
