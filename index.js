@@ -625,7 +625,25 @@ function buildTopUpEmbed(entries) {
     .setTimestamp();
 }
 
+function buildAllPoliceStatsEmbed(entries) {
+  const embed = new EmbedBuilder()
+    .setColor(0x1f8bff)
+    .setTitle("📋 Verificare polițiști")
+    .setFooter({ text: "Moldova RP • Evidență completă polițiști" })
+    .setTimestamp();
 
+  if (!entries.length) {
+    embed.setDescription("Nu există polițiști înregistrați în statistică.");
+    return embed;
+  }
+
+  const lines = entries.map((entry, index) => {
+    return `**${index + 1}.** <@${entry.officerId}> — 🚓 **${entry.patrolCount || 0}** patrule • ⏱️ **${formatDurationShort(entry.totalMs || 0)}**`;
+  });
+
+  embed.setDescription(lines.join("\n").slice(0, 4000));
+  return embed;
+}
 
 async function updatePatrolStatsMessage(guild) {
   try {
@@ -790,6 +808,11 @@ const commands = [
         .setDescription("Selectează polițistul")
         .setRequired(false)
     ),
+
+ new SlashCommandBuilder()
+    .setName("verificare-politisti")
+    .setDescription("Vezi lista tuturor polițiștilor cu orele și patrulele lor"),
+
     new SlashCommandBuilder()
   .setName("setore")
   .setDescription("Setează manual orele UP pentru un polițist")
@@ -890,7 +913,7 @@ client.on("interactionCreate", async (interaction) => {
             flags: MessageFlags.Ephemeral,
           });
         }
-
+        
         const row = new ActionRowBuilder().addComponents(
           new ButtonBuilder()
             .setCustomId("patrol_create_start")
@@ -905,6 +928,27 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
+        if (interaction.commandName === "verificare-politisti") {
+    if (!canViewPatrolStats(interaction.member)) {
+      return interaction.reply({
+        content: "⛔ Doar gradul Sub Chestor sau Chestor poate folosi această comandă.",
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+
+    const stats = readStats();
+    const entries = Object.values(stats).sort((a, b) => {
+      if ((b.totalMs || 0) !== (a.totalMs || 0)) {
+        return (b.totalMs || 0) - (a.totalMs || 0);
+      }
+      return (b.patrolCount || 0) - (a.patrolCount || 0);
+    });
+
+    return interaction.reply({
+      embeds: [buildAllPoliceStatsEmbed(entries)],
+      flags: MessageFlags.Ephemeral,
+    });
+  }
       if (interaction.commandName === "setore") {
         if (!canManageUpHours(interaction.member)) {
           return interaction.reply({
