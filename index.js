@@ -290,17 +290,6 @@ function canViewPatrolStats(member) {
   );
 }
 
-function canManageUpHours(member) {
-  if (!member?.roles?.cache) return false;
-  return (
-    member.roles.cache.has(GRADE_SUB_CHESTOR_ID) ||
-    member.roles.cache.has(GRADE_CHESTOR_ID) ||
-    (DEV_ROLE_ID && member.roles.cache.has(DEV_ROLE_ID)) ||
-    (BOT_OWNER_ID && member.id === BOT_OWNER_ID) ||
-    member.permissions.has(PermissionFlagsBits.Administrator)
-  );
-}
-
 function readStats() {
   try {
     if (!fs.existsSync(STATS_FILE)) return {};
@@ -486,55 +475,55 @@ async function syncAllUpRoles(guild) {
 }
 
 
-    function addPatrolStats(patrolData, durationMs) {
-      const allStats = readStats();
+function addPatrolStats(patrolData, durationMs) {
+  const allStats = readStats();
 
-      /* ================= OFITER CARE A INCEPUT PATRULA ================= */
+  const officerId = patrolData.officerId;
 
-      const officerId = patrolData.officerId;
+  if (!allStats[officerId]) {
+    allStats[officerId] = {
+      officerId: patrolData.officerId,
+      officerTag: patrolData.officerTag,
+      officerName: patrolData.officerName,
+      patrolCount: 0,
+      totalMs: 0,
+      lastPatrolAt: null,
+    };
+  }
 
-      if (!allStats[officerId]) {
-        allStats[officerId] = {
-          officerId: patrolData.officerId,
-          officerTag: patrolData.officerTag,
-          officerName: patrolData.officerName,
-          patrolCount: 0,
-          totalMs: 0,
-          lastPatrolAt: null,
-        };
-      }
+  allStats[officerId].officerTag = patrolData.officerTag;
+  allStats[officerId].officerName = patrolData.officerName;
+  allStats[officerId].patrolCount += 1;
+  allStats[officerId].totalMs += durationMs;
+  allStats[officerId].lastPatrolAt = Date.now();
 
-      allStats[officerId].officerTag = patrolData.officerTag;
-      allStats[officerId].officerName = patrolData.officerName;
-      allStats[officerId].patrolCount += 1;
-      allStats[officerId].totalMs += durationMs;
-      allStats[officerId].lastPatrolAt = Date.now();
+  if (patrolData.partnerId) {
+    const partnerId = patrolData.partnerId;
 
-      /* ================= PARTENERUL DE PATRULA ================= */
+    if (!allStats[partnerId]) {
+      allStats[partnerId] = {
+        officerId: partnerId,
+        officerTag: patrolData.partnerTag || "Partener",
+        officerName: patrolData.partnerName || "Partener",
+        patrolCount: 0,
+        totalMs: 0,
+        lastPatrolAt: null,
+      };
+    }
 
-      if (patrolData.partnerId) {
-        const partnerId = patrolData.partnerId;
+    allStats[partnerId].officerTag =
+      patrolData.partnerTag || allStats[partnerId].officerTag;
+    allStats[partnerId].officerName =
+      patrolData.partnerName || allStats[partnerId].officerName;
+    allStats[partnerId].patrolCount += 1;
+    allStats[partnerId].totalMs += durationMs;
+    allStats[partnerId].lastPatrolAt = Date.now();
+  }
 
-        if (!allStats[partnerId]) {
-          allStats[partnerId] = {
-            officerId: partnerId,
-            officerTag: patrolData.partnerLabel || "Partener",
-            officerName: patrolData.partnerLabel || "Partener",
-            patrolCount: 0,
-            totalMs: 0,
-            lastPatrolAt: null,
-          };
-        }
+  writeStats(allStats);
+}
 
-        allStats[partnerId].officerTag = patrolData.partnerLabel || allStats[partnerId].officerTag;
-        allStats[partnerId].officerName = patrolData.partnerLabel || allStats[partnerId].officerName;
-        allStats[partnerId].patrolCount += 1;
-        allStats[partnerId].totalMs += durationMs;
-        allStats[partnerId].lastPatrolAt = Date.now();
-      }
-     }
-
-  function buildStatsEmbed(entries) {
+function buildStatsEmbed(entries) {
   const totalHoursMs = entries.reduce((sum, entry) => sum + (entry.totalMs || 0), 0);
   const totalPatrols = entries.reduce((sum, entry) => sum + (entry.patrolCount || 0), 0);
 
@@ -1222,6 +1211,8 @@ client.on("interactionCreate", async (interaction) => {
       pendingPatrols.set(interaction.user.id, {
         partnerId,
         partnerLabel: `<@${partnerId}>`,
+        partnerTag: partnerMember.user.tag,
+        partnerName: partnerMember.user.username,
       });
 
       const vehicleMenu = new StringSelectMenuBuilder()
@@ -1316,6 +1307,8 @@ client.on("interactionCreate", async (interaction) => {
         officerName: interaction.user.username,
         partnerId: temp.partnerId,
         partnerLabel: temp.partnerLabel,
+        partnerTag: temp.partnerTag,
+        partnerName: temp.partnerName,
         vehicle: temp.vehicle,
         zone,
         status,
@@ -1347,7 +1340,7 @@ client.on("interactionCreate", async (interaction) => {
           `✅ <@${interaction.user.id}> a început o patrulă cu ${temp.partnerLabel}.\n` +
           `📍 Zona: **${zone}**\n` +
           `🚓 Vehicul: **${temp.vehicle}**\n` +
-          `🕒 Acest mesaj se va șterge automat în 2 minute.`,
+          `🕒 Acest mesaj se va șterge automat în 5 minute.`,
       });
 
       return interaction.reply({
@@ -1403,6 +1396,22 @@ client.on("interactionCreate", async (interaction) => {
             syncResult.newRank,
             syncResult.totalHours
           );
+        }
+      }
+
+      if (patrolData.partnerId) {
+        const patrolPartnerMember = await interaction.guild.members.fetch(patrolData.partnerId).catch(() => null);
+        if (patrolPartnerMember) {
+          const syncPartnerResult = await syncMemberUpRole(patrolPartnerMember);
+          if (syncPartnerResult.changed) {
+            await sendPromotionLog(
+              interaction.guild,
+              patrolPartnerMember,
+              syncPartnerResult.oldRank,
+              syncPartnerResult.newRank,
+              syncPartnerResult.totalHours
+            );
+          }
         }
       }
 
