@@ -1073,34 +1073,28 @@ client.on("interactionCreate", async (interaction) => {
   });
 }
 
-      if (interaction.commandName === "statistica-patrule") {
-        if (!canViewPatrolStats(interaction.member)) {
-          return interaction.reply({
-            content: "⛔ Doar gradul Sub Chestor sau Chestor poate folosi această comandă.",
-            flags: MessageFlags.Ephemeral,
-          });
-        }
+    if (interaction.commandName === "statistica-patrule") {
+      if (!canViewPatrolStats(interaction.member)) {
+        return interaction.reply({
+          content: "⛔ Doar gradul Sub Chestor sau Chestor poate folosi această comandă.",
+          flags: MessageFlags.Ephemeral,
+        });
+      }
 
-        if (interaction.channelId !== PATROL_STATS_CHANNEL_ID) {
-          return interaction.reply({
-            content: `❌ Această comandă poate fi folosită doar în <#${PATROL_STATS_CHANNEL_ID}>.`,
-            flags: MessageFlags.Ephemeral,
-          });
-        }
+      if (interaction.channelId !== PATROL_STATS_CHANNEL_ID) {
+        return interaction.reply({
+          content: `❌ Această comandă poate fi folosită doar în <#${PATROL_STATS_CHANNEL_ID}>.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
 
-        const statsChannel = await interaction.guild.channels.fetch(PATROL_STATS_CHANNEL_ID).catch(() => null);
-        if (!statsChannel || statsChannel.type !== ChannelType.GuildText) {
-          return interaction.reply({
-            content: "❌ Canalul de statistică nu este valid.",
-            flags: MessageFlags.Ephemeral,
-          });
-        }
+      // 🔥 IMPORTANT
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       await updatePatrolStatsMessage(interaction.guild);
 
-      return interaction.reply({
+      return interaction.editReply({
         content: "✅ Mesajul fix cu statistica patrulelor a fost actualizat.",
-        flags: MessageFlags.Ephemeral,
       });
       }
 
